@@ -5,8 +5,7 @@
 - 打开本地 PDF 文件，提取文本，并打印前 n 行（默认 10）
 
 依赖：
-- 优先使用 `pypdf`，若不可用则尝试 `PyPDF2`
-- 若二者均未安装，请先安装：
+- 使用 `pypdf`；未安装请先安装：
   pip install pypdf
 """
 
@@ -24,14 +23,10 @@ def _import_pdf_reader():
     try:
         from pypdf import PdfReader  # type: ignore
         return PdfReader
-    except Exception:
-        try:
-            from PyPDF2 import PdfReader  # type: ignore
-            return PdfReader
-        except Exception as exc:
-            raise ImportError(
-                "缺少依赖：请先安装 pypdf（或 PyPDF2）：pip install pypdf"
-            ) from exc
+    except Exception as exc:
+        raise ImportError(
+            "缺少依赖：请先安装 pypdf：pip install pypdf"
+        ) from exc
 
 
 def _normalize_path(raw_path: str) -> str:
