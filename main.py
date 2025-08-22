@@ -8,6 +8,7 @@ from typing import Optional
 from config import load_config
 from pdf_read import read_pdf_sentences
 from analysis import analyze_batches
+from note import save_notes
 
 
 def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
@@ -54,6 +55,13 @@ def main(argv: Optional[list[str]] = None) -> int:
             print(f"\n===== 批 {i} 输出（开始） =====")
             print(r)
             print(f"===== 批 {i} 输出（结束） =====\n")
+
+        # 将结果保存为带双向链接的 Markdown
+        try:
+            save_notes(cfg, results)
+            print("[DEBUG] 已将输出写入 Markdown 笔记库")
+        except Exception as note_exc:
+            print(f"[WARN] 笔记生成失败: {note_exc}")
 
     except Exception as exc:
         print(f"[ERROR] {exc}", file=sys.stderr)

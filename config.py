@@ -18,6 +18,7 @@ class GeminiConfig:
     http_proxy: Optional[str]
     https_proxy: Optional[str]
     input_file: str
+    output_lib: Optional[str]
 
 
 def _normalize_path(raw_path: str) -> str:
@@ -60,6 +61,8 @@ def load_config(config_path: Optional[str] = None) -> GeminiConfig:
         raise KeyError("[file] 段缺少 input_file 键")
 
     input_file = _normalize_path(parser.get("file", "input_file"))
+    output_lib_raw = parser.get("file", "output_lib", fallback="").strip()
+    output_lib = _normalize_path(output_lib_raw) if output_lib_raw else None
 
     return GeminiConfig(
         api_key=api_key,
@@ -67,6 +70,7 @@ def load_config(config_path: Optional[str] = None) -> GeminiConfig:
         http_proxy=http_proxy,
         https_proxy=https_proxy,
         input_file=input_file,
+        output_lib=output_lib,
     )
 
 
