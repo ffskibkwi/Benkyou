@@ -187,3 +187,31 @@ def save_notes(cfg: GeminiConfig, results: List[str]) -> None:
             sentence_index += 1
 
 
+def save_batch(cfg: GeminiConfig, batch_index: int, out_text: str, current_sentence_index: int) -> int:
+    """将单个批次 out_text 写入 Markdown。返回更新后的 sentence_index。
+
+    - batch_index：用于日志
+    - current_sentence_index：用于给本批次的 sentence 连续编号
+    """
+    if not cfg.output_lib:
+        raise ValueError("config.ini 缺少 [file].output_lib，无法生成 Markdown 笔记")
+
+    base_dir = cfg.output_lib
+    sentence_dir, piece_dir = _ensure_dirs(base_dir)
+
+    arr = _try_parse_json_array(out_text)
+    if arr is None:
+        print(f"[WARN] 第 {batch_index} 批输出非 JSON，已跳过写入")
+        return current_sentence_index
+
+    for obj in arr:
+        sentence_file_name, sentence_text = _write_sentence_file(
+            sentence_dir, current_sentence_index, obj
+        )
+        sentence_file_stem = os.path.splitext(sentence_file_name)[0]
+        for piece in obj.get("pieces") or []:
+            _append_piece_file(piece_dir, piece, sentence_file_stem, sentence_text)
+        current_sentence_index += 1
+    return current_sentence_index
+
+

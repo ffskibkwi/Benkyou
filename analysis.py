@@ -9,7 +9,9 @@
 from __future__ import annotations
 
 import os
-from typing import Iterable, List, Optional
+from typing import Iterable, List, Optional, Callable
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
+import time
 
 from config import GeminiConfig, apply_proxy_environment
 
@@ -98,8 +100,60 @@ def generate_json_with_model(model, input_text: str) -> str:
     return str(resp)
 
 
-def analyze_batches(cfg: GeminiConfig, sentences: List[str], max_batches: Optional[int] = None, min_chars: int = 50) -> List[str]:
-    """对分句进行批量分析，返回每批的 JSON 字符串结果列表。"""
+def test_connectivity(
+    cfg: GeminiConfig,
+    debug: bool = False,
+    timeout_secs: int = 10,
+    max_retries: int = 2,
+) -> None:
+    """在正式分析前进行一次连通性测试。
+
+    若在重试后仍失败，将抛出异常给调用方。
+    """
+    # 轻量系统提示与内容
+    model = create_gemini_model(cfg, system_prompt="Connectivity check")
+    prompt = "ping"
+    last_err: Optional[Exception] = None
+    for attempt in range(1, max_retries + 1):
+        try:
+            if debug:
+                print(f"[DEBUG] 连通性测试 第 {attempt}/{max_retries} 次，超时 {timeout_secs}s")
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                fut = executor.submit(generate_json_with_model, model, prompt)
+                _ = fut.result(timeout=timeout_secs)
+            if debug:
+                print("[DEBUG] 连通性测试成功")
+            return
+        except FuturesTimeoutError as exc:
+            last_err = exc
+            if debug:
+                print("[DEBUG] 连通性测试超时，重试…")
+            continue
+        except Exception as exc:
+            last_err = exc
+            if debug:
+                print(f"[DEBUG] 连通性测试异常：{exc}，重试…")
+            continue
+    raise RuntimeError(f"连通性测试失败：{last_err}")
+
+
+def analyze_batches(
+    cfg: GeminiConfig,
+    sentences: List[str],
+    max_batches: Optional[int] = None,
+    min_chars: int = 50,
+    debug: bool = False,
+    timeout_secs: int = 30,
+    max_retries: int = 5,
+    on_batch: Optional[Callable[[int, str, str], None]] = None,
+    tick_interval_secs: int = 3,
+) -> List[str]:
+    """对分句进行批量分析，返回每批的 JSON 字符串结果列表。
+
+    - debug: 打印每批的完整输入与输出
+    - timeout_secs: 单次请求最长等待时间
+    - max_retries: 超时或异常时的最大重试次数
+    """
     system_prompt = load_system_prompt()
     model = create_gemini_model(cfg, system_prompt)
     batches = batch_sentences(sentences, min_chars=min_chars)
@@ -107,11 +161,58 @@ def analyze_batches(cfg: GeminiConfig, sentences: List[str], max_batches: Option
         batches = batches[: max_batches]
 
     results: List[str] = []
+    total = len(batches)
     for idx, batch in enumerate(batches, 1):
-        print(f"[DEBUG] 投递第 {idx} 批，字符数={len(batch)}")
-        out = generate_json_with_model(model, batch)
-        print(f"[DEBUG] 第 {idx} 批返回长度={len(out)}")
-        results.append(out)
+        if debug:
+            print(f"[DEBUG] 第 {idx}/{total} 批 输入（len={len(batch)}）:\n{batch}")
+        else:
+            print(f"[INFO] 提交第 {idx}/{total} 批，长度 {len(batch)} 字")
+
+        last_err: Optional[Exception] = None
+        for attempt in range(1, max_retries + 1):
+            try:
+                with ThreadPoolExecutor(max_workers=1) as executor:
+                    fut = executor.submit(generate_json_with_model, model, batch)
+                    start_ts = time.time()
+                    elapsed = 0
+                    out: Optional[str] = None
+                    while True:
+                        remaining = max(0.0, timeout_secs - elapsed)
+                        if remaining <= 0:
+                            raise FuturesTimeoutError()
+                        wait = min(tick_interval_secs, remaining)
+                        try:
+                            out = fut.result(timeout=wait)
+                            break
+                        except FuturesTimeoutError:
+                            elapsed = int(time.time() - start_ts)
+                            print(f"[INFO] 第 {idx}/{total} 批 第 {attempt}/{max_retries} 次等待中… {elapsed}s/{timeout_secs}s")
+                            continue
+                    assert out is not None
+                if debug:
+                    print(f"[DEBUG] 第 {idx}/{total} 批 第 {attempt} 次返回（len={len(out)}）:\n{out}")
+                else:
+                    print(f"[INFO] 第 {idx}/{total} 批 完成")
+                results.append(out)
+                if on_batch is not None:
+                    try:
+                        on_batch(idx, out, batch)
+                    except Exception as cb_exc:
+                        print(f"[WARN] 第 {idx} 批写入回调失败：{cb_exc}")
+                break
+            except FuturesTimeoutError as exc:
+                last_err = exc
+                print(f"[INFO] 第 {idx}/{total} 批 第 {attempt}/{max_retries} 次超时（>{timeout_secs}s），重试…")
+                continue
+            except Exception as exc:
+                last_err = exc
+                print(f"[INFO] 第 {idx}/{total} 批 第 {attempt}/{max_retries} 次异常：{exc}，重试…")
+                continue
+        else:
+            # 全部尝试失败
+            raise RuntimeError(
+                f"批次 {idx}/{total} 在重试 {max_retries} 次后仍失败：{last_err}"
+            )
     return results
 
 
